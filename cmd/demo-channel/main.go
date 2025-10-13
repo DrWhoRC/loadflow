@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yourname/loadflow/pkg/consumer"
-	"github.com/yourname/loadflow/pkg/flow/router"
-	"github.com/yourname/loadflow/pkg/flow/source"
-	"github.com/yourname/loadflow/pkg/pool"
-	"github.com/yourname/loadflow/pkg/runtime"
+	"github.com/DrWhoRC/loadflow/pkg/consumer"
+	"github.com/DrWhoRC/loadflow/pkg/flow/router"
+	"github.com/DrWhoRC/loadflow/pkg/flow/source"
+	"github.com/DrWhoRC/loadflow/pkg/pool"
+	"github.com/DrWhoRC/loadflow/pkg/runtime"
 )
 
 func main() {
