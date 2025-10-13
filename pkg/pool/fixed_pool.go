@@ -28,6 +28,9 @@ func NewFixedPool(name string, size, queue int) *FixedPool {
 	return p
 }
 
+func (p *FixedPool) Name() string { return p.name }
+func (p *FixedPool) Size() int    { return p.size }
+
 func (p *FixedPool) Submit(ctx context.Context, task func()) (err error) {
 	if task == nil {
 		return errors.New("nil task")
