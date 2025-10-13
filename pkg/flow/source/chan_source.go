@@ -31,4 +31,5 @@ func (c *ChanSource) Recv(ctx context.Context) ([]byte, error) {
 	}
 }
 
+// 只读通道不能close，对于只读通道，关闭的渠道和责任在于发送数据一方，所以需要使用其他方法在发送方关闭
 func (c *ChanSource) Close() error { return nil }
