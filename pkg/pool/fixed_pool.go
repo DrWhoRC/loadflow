@@ -19,11 +19,74 @@ type FixedPool struct {
 	stopped chan struct{} // 新增：只读关闭信号
 }
 
+// 按key把kafka下游的数据二次划分，可能key123都进了池1，456进了池2，
+// 池1中的两个协程来消费key123的数据，比如key1-1，key1-2，key2-1，key2-2，key2-3，key3-1
+// 这样其实会出现乱序的情况，在v0.1.0版本中先不考虑这个问题，后续版本再优化
+// 后续优化思路如下：
+
+// 那其实，假如我们每个key分配一个协程池，固定key和协程池的对应关系（1对1），
+// 只要协程池的zise>1，都会发生顺序问题对吧，所以我觉得针对，
+// 我们需要数据有序这种情况，解决手段无非4种：
+// 1. 设size=1，一刀切死
+// 2. 多key对应单协程池的时候，
+// 控制一个key一个协程，想一个办法让协程捕捉同一个key的数据，
+// 比如key123进入了池1，那么我们要找出key1有哪些，key2有哪些，3有哪些，
+// 然后分给三个协程来消费确保顺序
+// 3. 加锁
+// 4. 用redis暂存顺序不对的数据，比如要求1234这个顺序，结果协程消费完12后，
+// 发现进来的数据是4，并且知道上一条是2（这一块应该设计一个保存状态，
+// 比去数据库找更快），那么就会把4存到redis，等3进来了，再刷redis回写
+// 但这一块我想不到除了固定频次刷redis其他的方法了）
+
+// 最好的解决方案其实是2，需要一个按key分片的执行的串行执行器，
+// 需要注意的是，当key很多的时候，协程池的size可能不够用，要固定一个上限，最好是=size
+
+// Suppose we assign one worker pool per key and fix the key↔pool mapping (1:1).
+// If a pool’s size > 1, in-order processing is no longer guaranteed.
+// For workloads that require ordering, there are essentially four approaches:
+//
+// 1) Set size = 1 (hard cap).
+//    - Simplest and safest: strict global ordering per pool.
+//    - Downside: throughput limited; all keys handled by this pool are serialized.
+//
+// 2) Multiple keys share one pool, but enforce per-key serialization.
+//    - Build a keyed/striped executor so that each key is handled by exactly one goroutine.
+//    - Example: keys 1,2,3 are routed to pool #1; within that pool,
+//      route key1, key2, key3 to three distinct single-threaded stripes to preserve order.
+//
+// 3) Locks.
+//    - Not recommended as a standalone solution. Global locks reduce to size=1.
+//      Per-key locks only work if tasks for the same key are enqueued FIFO
+//      and executed under the same lock; otherwise ordering still breaks.
+//
+// 4) Redis-based reordering buffer.
+//    - If the required order is 1→2→3→4 but we receive 1,2,4 while 3 is missing,
+//      temporarily stash “4” in Redis and apply it once “3” arrives.
+//    - Requires a fast per-key state (faster than hitting the DB).
+//    - Drawbacks: higher complexity/latency; needs replay triggers beyond naive periodic flush.
+//
+// The best pragmatic solution is (2): a per-key sharded, serial executor.
+// Caveat: when the number of distinct keys is large, you must cap concurrency with a fixed upper
+// bound (number of stripes). Ideally, this upper bound equals the pool size.
+
 func NewFixedPool(name string, size, queue int) *FixedPool {
 	p := &FixedPool{
-		name: name, size: max(1, size),
+		name:    name,
+		size:    max(1, size),
 		tasks:   make(chan func(), max(0, queue)),
 		stopped: make(chan struct{}),
+	}
+	// 启动 size 个 worker
+	for i := 0; i < p.size; i++ {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			for t := range p.tasks { // 通道关闭后自然退出
+				if t != nil {
+					t() // 这里真正执行 handler(msg)
+				}
+			}
+		}()
 	}
 	return p
 }
