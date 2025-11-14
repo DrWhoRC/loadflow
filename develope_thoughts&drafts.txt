@@ -1,0 +1,33 @@
+[Runtime] Starting...
+[Metrics] fast: +788 (total=788, q=204) | slow: +198 (total=198, q=256)
+[Metrics] fast: +796 (total=1584, q=407) | slow: +198 (total=396, q=256)
+[Metrics] fast: +793 (total=2377, q=610) | slow: +198 (total=594, q=256)
+[Metrics] fast: +795 (total=3172, q=807) | slow: +200 (total=794, q=204)
+[Metrics] fast: +793 (total=3965, q=1013) | slow: +198 (total=992, q=6)
+[Metrics] fast: +735 (total=4700, q=292) | slow: +8 (total=1000, q=0)
+[Metrics] fast: +300 (total=5000, q=0) | slow: +0 (total=1000, q=0)
+[Metrics] fast: +0 (total=5000, q=0) | slow: +0 (total=1000, q=0)
+[Metrics] fast: +0 (total=5000, q=0) | slow: +0 (total=1000, q=0)
+[Metrics] fast: +0 (total=5000, q=0) | slow: +0 (total=1000, q=0)
+
+我们重点关注一下q，q返回的是fixedpool的task数量，这个task是在runtime的start函数里边submit的，
+在main函数中定义了handler并绑定到了runtime rt上，然后去执行的对吧。
+q返回的len(p.tasks)，task是个管道，那也就是说这里返回的最大值，也就是我们定义的fixedpool中的queue了
+（原因是这一行：tasks: make(chan func(), max(0, queue)),）
+所以我们会观察到有趣的现象，左边的q最大久1k多点了，超不多main函数定义的2048，
+但是右边的q触碰到了任务管道容量的阈值256，也就导致，他连着三个周期的q都是满的，即256，
+也就是说，在这期间，其实有很多数据是在生产端积压着无法被消费甚至都没办法入等待队列 
+所以在我后期实现负载均衡的时候，这就是一个典型的场景需要我去解决
+
+We’ll focus on q. q returns the number of tasks in the fixedPool, and these tasks are submitted in the start function of runtime.
+In main, a handler is defined and bound to the runtime rt, and then executed
+
+q returns len(p.tasks), and tasks is a channel. That means the maximum value returned here is exactly the queue size we configured in fixedPool
+(because of this line: tasks: make(chan func(), max(0, queue)),)
+
+So we observe an interesting phenomenon: on the left side, the max q is a bit over 1k, almost the 2048 defined in main,
+but on the right side, q hits the task channel capacity limit of 256. As a result, q stays full (256) for three consecutive intervals.
+
+That means during this period, a lot of data is actually being backlogged on the producer side — it can’t be consumed, and can’t even enter the waiting queue.
+
+So when I implement load balancing later, this is exactly the kind of scenario I’ll need to address.

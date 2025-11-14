@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -17,6 +18,8 @@ type FixedPool struct {
 	wg      sync.WaitGroup
 	once    sync.Once
 	stopped chan struct{} // 新增：只读关闭信号
+
+	processed uint64 // 处理的任务总数
 }
 
 // 按key把kafka下游的数据二次划分，可能key123都进了池1，456进了池2，
@@ -84,6 +87,7 @@ func NewFixedPool(name string, size, queue int) *FixedPool {
 			for t := range p.tasks { // 通道关闭后自然退出
 				if t != nil {
 					t() // 这里真正执行 handler(msg)
+					atomic.AddUint64(&p.processed, 1)
 				}
 			}
 		}()
@@ -127,6 +131,14 @@ func (p *FixedPool) DrainAndStop(ctx context.Context) error {
 		return nil
 	}
 	// 该submit在队列满时会阻塞等待，除非 ctx 取消。这个是有意设计（背压给上游
+}
+
+func (p *FixedPool) ProcessedCount() uint64 {
+	return atomic.LoadUint64(&p.processed)
+}
+
+func (p *FixedPool) GetQueueDepth() int {
+	return len(p.tasks)
 }
 
 func max(a, b int) int {
