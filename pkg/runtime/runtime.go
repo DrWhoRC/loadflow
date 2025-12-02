@@ -24,6 +24,8 @@ type Runtime interface {
 	Start(ctx context.Context) error
 	// Stop 优雅地停止整个运行时引擎。
 	Stop(ctx context.Context) error
+
+	DumpMetrics() []pool.PoolMetrics
 }
 
 // runtime 是 Runtime 接口的具体实现。
@@ -163,8 +165,6 @@ func (r *runtime) Stop(ctx context.Context) error {
 	cancel := r.cancel
 	r.rtMu.RUnlock()
 
-	// --- 优雅停机三部曲 ---
-
 	// 1) 取消内部上下文，这将向所有正在 Recv() 的 goroutine 发送停止信号。
 	//    这些 goroutine 将会从 Recv() 处唤醒，然后检查到 r.ctx.Done() 并退出。
 	if cancel != nil {
@@ -187,4 +187,27 @@ func (r *runtime) Stop(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (r *runtime) DumpMetrics() []pool.PoolMetrics {
+	r.rtMu.RLock()
+	defer r.rtMu.RUnlock()
+
+	res := make([]pool.PoolMetrics, 0, len(r.pools))
+
+	for name, p := range r.pools {
+		mp, ok := p.(pool.PoolWithMetrics)
+		if !ok {
+			// 这个 pool 还没实现 Metrics，就先跳过
+			continue
+		}
+
+		m := mp.GetMetrics()
+		if m.Name == "" {
+			m.Name = name
+		}
+		res = append(res, m)
+	}
+
+	return res
 }

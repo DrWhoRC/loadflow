@@ -73,6 +73,20 @@ type FixedPool struct {
 // bound (number of stripes). Ideally, this upper bound equals the pool size.
 
 func NewFixedPool(name string, size, queue int) *FixedPool {
+	// queue只是允许等待消费的数据条数，不产生任何对实际消费速率的影响，可以理解为只是一个自我高潮的指标
+	// 肌肉大不大还是得看size，和我们消费的handler
+	// 那queue有啥必要呢？ 自我高潮对于监控来说非常有意义，
+	// 对于敏感的服务，我们设小一点，这样可以更快的被负载出去
+	// 对于不敏感的服务，我们可以设大一点；
+	// 自始至终这就是一个监控指标，多堵算堵，多快算快，还是用户说了算
+	// `queue` only sets how many tasks can wait for consumption; it doesn't affect actual throughput.
+	// Think of it as a "feel-good" metric for observability.
+	// Real muscle (processing power) depends on `size` and the handler's performance.
+	// So why bother with `queue`? Because this "feel-good" metric is crucial for monitoring.
+	// For latency-sensitive services, keep it small so backpressure kicks in faster.
+	// For less sensitive services, make it larger to buffer bursts.
+	// At the end of the day, it's a monitoring/tuning knob: "how full is too full" and "how fast is fast enough"
+	// are entirely up to the user's requirements.
 	p := &FixedPool{
 		name:    name,
 		size:    max(1, size),
@@ -139,6 +153,10 @@ func (p *FixedPool) ProcessedCount() uint64 {
 
 func (p *FixedPool) GetQueueDepth() int {
 	return len(p.tasks)
+}
+
+func (p *FixedPool) GetQueueCapacity() int {
+	return cap(p.tasks)
 }
 
 func max(a, b int) int {

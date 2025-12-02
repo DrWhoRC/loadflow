@@ -3,17 +3,22 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"net/http"
 	"time"
 
 	"github.com/DrWhoRC/loadflow/pkg/consumer"
 	"github.com/DrWhoRC/loadflow/pkg/flow/router"
 	"github.com/DrWhoRC/loadflow/pkg/flow/source"
+	"github.com/DrWhoRC/loadflow/pkg/metrics"
 	"github.com/DrWhoRC/loadflow/pkg/pool"
 	"github.com/DrWhoRC/loadflow/pkg/runtime"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
-	// 业务处理函数（此处仅模拟耗时）
+	// 业务处理函数
 	h := consumer.Handler(func(msg []byte) error {
 		_ = msg
 		time.Sleep(10 * time.Millisecond)
@@ -22,13 +27,13 @@ func main() {
 
 	fmt.Println("[Main] Starting loadflow demo...")
 
-	// 两条数据流（chan 模拟）
+	// 两条数据流
 	chA := make(chan []byte, 1024)
 	chB := make(chan []byte, 1024)
 	srcA := source.NewChanSource("stream_a", chA)
 	srcB := source.NewChanSource("stream_b", chB)
 
-	// 两个协程池（固定大小）
+	// 两个协程池
 	poolFast := pool.NewFixedPool("pool_fast", 8, 2048)
 	poolSlow := pool.NewFixedPool("pool_slow", 2, 256)
 
@@ -57,35 +62,33 @@ func main() {
 		fmt.Println("[Runtime] Stopped.")
 	}()
 
-	// === 新增：metrics 监控协程 ===
+	// Prometheus registry + exporter
+	reg := prometheus.NewRegistry()
+	exporter := metrics.NewPrometheusExporter(
+		rt,
+		reg,
+		metrics.ExporterOptions{
+			Namespace: "loadflow",
+			Subsystem: "runtime",
+		},
+	)
+
+	// 启动 exporter（定期从 runtime 拉指标）
+	go exporter.Start(ctx, time.Second)
+
+	// 暴露 /metrics HTTP server
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+
+	srv := &http.Server{
+		Addr:    ":2112",
+		Handler: mux,
+	}
+
 	go func() {
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-
-		var lastFast, lastSlow uint64
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				pf := poolFast.ProcessedCount()
-				ps := poolSlow.ProcessedCount()
-
-				incFast := pf - lastFast
-				incSlow := ps - lastSlow
-
-				qf := poolFast.GetQueueDepth()
-				qs := poolSlow.GetQueueDepth()
-
-				fmt.Printf("[Metrics] fast: +%d (total=%d, q=%d) | slow: +%d (total=%d, q=%d)\n",
-					incFast, pf, qf,
-					incSlow, ps, qs,
-				)
-
-				lastFast = pf
-				lastSlow = ps
-			}
+		log.Println("metrics server listening on :2112")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("metrics server error: %v", err)
 		}
 	}()
 
@@ -99,7 +102,6 @@ func main() {
 			<-t.C
 			chA <- []byte(fmt.Sprintf("A-%d", i))
 		}
-		// 这里先不 close，后面目标 C 再一起处理生命周期
 	}()
 
 	go func() {
@@ -112,10 +114,23 @@ func main() {
 	}()
 
 	fmt.Println("[Main] Running for 15 seconds...")
-	// 运行一段时间后优雅关闭
-	time.Sleep(15 * time.Second)
+	//time.Sleep(15 * time.Second)
+	time.Sleep(2 * time.Minute)
 
 	fmt.Println("[Main] Initiating graceful shutdown...")
+
+	// 通知 runtime / exporter 退出
+	cancel()
+
+	// 优雅关闭 HTTP server
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("metrics server shutdown error: %v", err)
+	}
+
+	// 如果你需要确保 runtime 内部 Stop 做一些额外清理，可以保留这一句
 	_ = rt.Stop(context.Background())
+
 	fmt.Println("[Main] Shutdown complete.")
 }
