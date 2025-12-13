@@ -14,18 +14,18 @@ import (
 // Runtime 是整个数据流处理引擎的接口定义。
 // 它定义了注册组件、启动和停止数据流处理的能力。
 type Runtime interface {
-	// RegisterSource 注册一个数据源。
 	RegisterSource(src source.Source) error
-	// RegisterPool 注册一个工作协程池。
 	RegisterPool(p pool.WorkerPool) error
-	// UseRouter 指定一个路由器用于连接数据源和协程池。
 	UseRouter(r router.Router)
-	// Start 启动整个运行时引擎。这是一个阻塞方法，直到上下文被取消或 Stop 被调用。
 	Start(ctx context.Context) error
-	// Stop 优雅地停止整个运行时引擎。
 	Stop(ctx context.Context) error
 
 	DumpMetrics() []pool.PoolMetrics
+	// RegisterSource 注册一个数据源。
+	// RegisterPool 注册一个工作协程池。
+	// UseRouter 指定一个路由器用于连接数据源和协程池。
+	// Start 启动整个运行时引擎。这是一个阻塞方法，直到上下文被取消或 Stop 被调用。
+	// Stop 优雅地停止整个运行时引擎。
 }
 
 // runtime 是 Runtime 接口的具体实现。
