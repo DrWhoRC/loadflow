@@ -8,6 +8,7 @@ import (
 	"github.com/DrWhoRC/loadflow/pkg/consumer"
 	"github.com/DrWhoRC/loadflow/pkg/flow/router"
 	"github.com/DrWhoRC/loadflow/pkg/flow/source"
+	"github.com/DrWhoRC/loadflow/pkg/message"
 	"github.com/DrWhoRC/loadflow/pkg/pool"
 )
 
@@ -21,11 +22,19 @@ type Runtime interface {
 	Stop(ctx context.Context) error
 
 	DumpMetrics() []pool.PoolMetrics
+
+	// UseMessageCodec 允许用户替换默认 JSON 协议（未来扩展用）
+	UseMessageCodec(c message.Codec)
+	UseKeyFunc(fn router.KeyFunc)
+
 	// RegisterSource 注册一个数据源。
 	// RegisterPool 注册一个工作协程池。
 	// UseRouter 指定一个路由器用于连接数据源和协程池。
 	// Start 启动整个运行时引擎。这是一个阻塞方法，直到上下文被取消或 Stop 被调用。
 	// Stop 优雅地停止整个运行时引擎。
+	// UseKeyFunc 允许用户定义 key 的来源：
+	// - 若返回 nil/空：表示无 key
+	// - 若返回非空：表示启用 key
 }
 
 // runtime 是 Runtime 接口的具体实现。
@@ -39,18 +48,25 @@ type runtime struct {
 	router  router.Router              // router 定义了从数据源到协程池的路由规则。
 	started bool                       // started 标记运行时是否已经启动。
 
-	ctx    context.Context    // ctx 是整个运行时生命周期的上下文。
-	cancel context.CancelFunc // cancel 是用于取消上述上下文的函数，调用它会触发整个运行时的停止流程。
-	wgSrc  sync.WaitGroup     // wgSrc 用于等待所有数据源的读取 goroutine 安全退出。
+	ctx      context.Context    // ctx 是整个运行时生命周期的上下文。
+	cancel   context.CancelFunc // cancel 是用于取消上述上下文的函数，调用它会触发整个运行时的停止流程。
+	wgSrc    sync.WaitGroup     // wgSrc 用于等待所有数据源的读取 goroutine 安全退出。
+	msgCodec message.Codec
+
+	// KeyFunc：允许用户覆盖/补充 key 的提取逻辑
+	// - 输入：srcName + payload（注意：这里是 payload，不是 raw）
+	// - 返回：key（nil/空表示无 key）
+	keyFn router.KeyFunc
 }
 
 // New 创建一个新的 Runtime 实例。
 // 参数 h 是一个 consumer.Handler 函数，它定义了如何处理从数据源接收到的每一条消息。
 func New(h consumer.Handler) Runtime {
 	return &runtime{
-		h:     h,
-		srcs:  make(map[string]source.Source),
-		pools: make(map[string]pool.WorkerPool),
+		h:        h,
+		srcs:     make(map[string]source.Source),
+		pools:    make(map[string]pool.WorkerPool),
+		msgCodec: message.NewJSONCodec(),
 	}
 }
 
@@ -106,6 +122,19 @@ func (r *runtime) Start(ctx context.Context) error {
 	for name, src := range r.srcs {
 		r.wgSrc.Add(1) // 为即将启动的 goroutine 增加等待计数
 		go func(srcName string, s source.Source) {
+
+			//取出当前配置的 codec、keyFn、router 和 handler，确保，就算中间有配置或者handler更改，当前的任务也要按照当时的配置和handler来处理
+			r.rtMu.RLock()
+			codec := r.msgCodec
+			keyFn := r.keyFn
+			ro := r.router
+			h := r.h
+			r.rtMu.RUnlock()
+
+			if codec == nil {
+				codec = message.NewJSONCodec()
+			}
+
 			defer r.wgSrc.Done() // 当 goroutine 退出时，减少等待计数
 			for {
 				// 1. 从数据源阻塞式地接收一条消息。
@@ -124,9 +153,37 @@ func (r *runtime) Start(ctx context.Context) error {
 					}
 				}
 
-				// 2. 根据数据源名称，通过路由器查找应该处理这条消息的协程池。
-				p, ok := r.router.Route(srcName)
+				//1.5 解析消息，提取 payload 和 key
+				raw := msg
+				// 先用 codec 解出 (key,payload)
+				key, payload, ok := codec.Decode(raw)
 				if !ok {
+					// 降级：raw 当作 payload，key 为空
+					payload = raw
+					key = nil
+				}
+
+				// 用户自定义 keyFn：可覆盖或补充 key
+				if keyFn != nil {
+					k2 := r.keyFn(srcName, payload)
+					if len(k2) > 0 {
+						key = k2
+					} else {
+						key = nil
+					}
+				}
+
+				// 2. 根据数据源名称，通过路由器查找应该处理这条消息的协程池。
+				var (
+					p     pool.WorkerPool
+					isKey bool
+				)
+				if kr, isKeyRouter := ro.(router.KeyRouter); isKeyRouter {
+					p, isKey = kr.RouteWithKey(srcName, key) // A2 用 keyless -> WRR；A3 再用 keyed -> hash
+				} else {
+					p, isKey = ro.Route(srcName)
+				}
+				if !isKey {
 					log.Printf("[runtime] no route for src=%s, drop", srcName)
 					continue // 如果没有找到路由，则丢弃消息，继续下一轮循环。
 				}
@@ -134,7 +191,7 @@ func (r *runtime) Start(ctx context.Context) error {
 				// 3. 创建一个任务（一个闭包函数），该任务封装了对消息的实际处理逻辑。
 				task := func() {
 					// 调用用户传入的 Handler 函数处理消息。
-					if err := r.h(msg); err != nil {
+					if err := h(payload); err != nil {
 						log.Printf("[handler] error src=%s err=%v", srcName, err)
 					}
 				}
@@ -210,4 +267,20 @@ func (r *runtime) DumpMetrics() []pool.PoolMetrics {
 	}
 
 	return res
+}
+
+func (r *runtime) UseMessageCodec(c message.Codec) {
+	r.rtMu.Lock()
+	defer r.rtMu.Unlock()
+	if c == nil {
+		r.msgCodec = message.NewJSONCodec()
+		return
+	}
+	r.msgCodec = c
+}
+
+func (r *runtime) UseKeyFunc(fn router.KeyFunc) {
+	r.rtMu.Lock()
+	defer r.rtMu.Unlock()
+	r.keyFn = fn
 }

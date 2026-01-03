@@ -7,3 +7,9 @@ type Router interface {
 	Route(srcName string) (pool.WorkerPool, bool)
 	Snapshot() map[string]string
 }
+type KeyFunc func(srcName string, payload []byte) []byte
+
+type KeyRouter interface {
+	Router
+	RouteWithKey(srcName string, key []byte) (pool.WorkerPool, bool)
+}
