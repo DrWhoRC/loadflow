@@ -13,3 +13,8 @@ type KeyRouter interface {
 	Router
 	RouteWithKey(srcName string, key []byte) (pool.WorkerPool, bool)
 }
+
+type MutableRouter interface {
+	Router
+	SetMany(srcName string, pools []pool.WorkerPool, weights []int) error
+}

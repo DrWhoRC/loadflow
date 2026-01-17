@@ -16,7 +16,7 @@ q返回的len(p.tasks)，task是个管道，那也就是说这里返回的最大
 （原因是这一行：tasks: make(chan func(), max(0, queue)),）
 所以我们会观察到有趣的现象，左边的q最大久1k多点了，超不多main函数定义的2048，
 但是右边的q触碰到了任务管道容量的阈值256，也就导致，他连着三个周期的q都是满的，即256，
-也就是说，在这期间，其实有很多数据是在生产端积压着无法被消费甚至都没办法入等待队列 
+也就是说，在这期间，其实有很多数据是在生产端积压着无法被消费甚至都没办法入等待队列
 所以在我后期实现负载均衡的时候，这就是一个典型的场景需要我去解决
 
 We’ll focus on q. q returns the number of tasks in the fixedPool, and these tasks are submitted in the start function of runtime.
@@ -50,3 +50,65 @@ Thoughts about Queue：（2025/12/02）
 // For less sensitive services, make it larger to buffer bursts.
 // At the end of the day, it's a monitoring/tuning knob: "how full is too full" and "how fast is fast enough"
 // are entirely up to the user's requirements.
+
+
+// 用户需要做的事情：
+
+1. 注册strategy
+// 用户可以使用内置策略，也可以自己写
+registry := scheduler.NewStrategyRegistry()
+registry.Register("pressure_rebalance", &PressureRebalanceStrategy{})
+registry.Register("my_custom", &MyCustomStrategy{})  // 自定义
+
+2. 配置binding
+// 告诉调度器："stream_a 绑定了这两个池"
+bindings := scheduler.NewBindingRegistry()
+bindings.Set("stream_a", 
+    []pool.WorkerPool{poolFast, poolSlow}, 
+    []int{8, 2})
+
+3. 配置Policy
+// 为每个流配置策略
+policies := scheduler.StaticPolicyProvider{
+    Default: Policy{
+        Enabled: true,
+        StrategyName: "pressure_rebalance",
+    },
+    Per: map[string]Policy{
+        "stream_a": {StrategyName: "my_custom"},  // 用自定义策略
+        "stream_b": {Enabled: false},             // 禁用自动调度
+    },
+}
+
+4. 启动controller
+controller := scheduler.NewController(
+    provider, registry, policies, applier, bindings, sink, opts)
+go controller.Run(ctx)
+
+T0 (10:00:00) - Controller 启动
+    ↓
+T2 (10:00:02) - 第一次 tick
+    ├─ Sample: 获取所有池的指标
+    ├─ 遍历 stream_a:
+    │   ├─ Policy: {Enabled:true, Strategy:"time_based", Cooldown:5s}
+    │   ├─ Strategy: TimeBasedStrategy.DecideStream()
+    │   │   └─ 当前 10:00，是工作时间
+    │   │   └─ 生成 Plan: [9, 1]
+    │   ├─ 冷却检查: 第一次调整，不在冷却期
+    │   ├─ Apply: router.SetMany("stream_a", [poolFast, poolSlow], [9,1])
+    │   └─ 标记: lastApply["stream_a"] = 10:00:02
+    ├─ 遍历 stream_b:
+    │   └─ Policy: {Enabled:false}
+    │   └─ 跳过（禁用）
+    
+T4 (10:00:04) - 第二次 tick
+    ├─ 遍历 stream_a:
+    │   ├─ Strategy 想调整 [9,1] → [8,2]
+    │   ├─ 冷却检查: 10:00:04 - 10:00:02 = 2秒 < 5秒
+    │   └─ 拦截，跳过
+    
+T9 (10:00:09) - 第四次 tick
+    ├─ 遍历 stream_a:
+    │   ├─ 冷却检查: 10:00:09 - 10:00:02 = 7秒 > 5秒
+    │   ├─ Apply: router.SetMany("stream_a", [...], [8,2])
+    │   └─ 标记: lastApply["stream_a"] = 10:00:09
