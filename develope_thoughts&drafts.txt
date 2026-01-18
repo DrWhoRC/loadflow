@@ -112,3 +112,20 @@ T9 (10:00:09) - 第四次 tick
     │   ├─ 冷却检查: 10:00:09 - 10:00:02 = 7秒 > 5秒
     │   ├─ Apply: router.SetMany("stream_a", [...], [8,2])
     │   └─ 标记: lastApply["stream_a"] = 10:00:09
+
+
+Controller.Run()
+    ↓
+Provider.Sample() → 采集指标
+    ↓
+Policy.Get() → 查询该流的配置
+    ↓
+Registry.Get() → 查找策略
+    ↓
+Strategy.DecideStream() → 生成 Plan
+    ↓
+inCooldown() → 检查冷却
+    ↓
+Applier.Apply() → 应用到 Router
+    ↓
+markApplied() → 记录时间
