@@ -1,0 +1,105 @@
+# LoadFlow Demo Configuration
+# 本配置文件定义了一个完整的负载均衡演示场景，用于证明系统的各项能力
+
+# Demo 运行参数
+demo:
+  duration: 60s        # 总运行时间
+  metrics_port: 2112   # Prometheus metrics 端口
+
+# 协程池配置
+# 目标: 大幅增加处理延迟,让队列有明显积压,展示重平衡的渐进过程
+pools:
+  - name: pool_fast
+    workers: 5         # 减少 worker 数量 (8→5)
+    queue: 1024        # 队列容量
+    base_latency: 100ms # 进一步增加延迟 (50ms→100ms) → 每个worker 10 msg/s
+    
+  - name: pool_medium
+    workers: 3         # 减少 workers (4→3)
+    queue: 512         # 队列容量
+    base_latency: 200ms # 增加延迟 (150ms→200ms) → 每个worker 5 msg/s
+    bad_phase:         # 注入故障阶段（可选）
+      start: 30s       # 故障开始时间
+      end: 40s         # 故障结束时间
+      latency: 400ms   # 故障期间的延迟
+      error_rate: 0.15 # 故障期间的错误率 (15%)
+    
+  - name: pool_slow
+    workers: 2         # 减少 workers (3→2)
+    queue: 256         # 队列容量
+    base_latency: 300ms # 进一步增加延迟 (250ms→300ms) → 每个worker ~3.3 msg/s
+
+# 数据流配置
+# 目标: 调整发送速率,让队列有适度积压,便于观察重平衡过程
+streams:
+  # Stream A: 纯吞吐流（证明 A2 - 无 key 按权重分发）
+  - name: stream_a
+    type: pure_consumption
+    rate: 20             # 低速率,不影响主要观察
+    key_enabled: false   # 不使用 key
+    
+  # Stream B: 粘性路由流（证明 A3 - 有 key sticky per pool）
+  - name: stream_b
+    type: sticky
+    rate: 20             # 低速率,不影响主要观察
+    key_enabled: true
+    key_count: 1000      # 1000 个不同的 key 循环使用
+    
+  # Stream C: 闭环重均衡演示流（证明 B1/B2.2/B2.5）
+  # 处理能力分析:
+  #   - pool_fast:   5 workers × 10 msg/s   = 50 msg/s
+  #   - pool_medium: 3 workers × 5 msg/s    = 15 msg/s
+  #   - pool_slow:   2 workers × 3.3 msg/s  = 6.6 msg/s
+  #   总计: 71.6 msg/s
+  # 初始权重 1:2:4 → fast 14%, medium 29%, slow 57%
+  # 发送 100 msg/s (超过总容量 40%)
+  #   - fast 分到:   ~14 msg/s (50 capacity, 可以处理,但会有小积压)
+  #   - medium 分到: ~29 msg/s (15 capacity, 超载 2倍, 队列持续增长)
+  #   - slow 分到:   ~57 msg/s (6.6 capacity, 超载 8.6倍!, 队列快速增长)
+  # 预期: slow 队列快速增长 → 触发重平衡 → 权重调整 → slow增速放缓 → 
+  #       medium 队列开始显现压力 → 可能触发第二次重平衡 → 达到新平衡点(有积压但不崩溃)
+  - name: stream_c
+    type: rebalance_demo
+    rate: 100            # 总速率 100 msg/s (超过总容量 28.4 msg/s,会持续积压)
+    key_enabled: false
+
+# 路由配置
+routing:
+  stream_a:
+    pools: [pool_fast, pool_medium, pool_slow]
+    initial_weights: [1, 2, 4]  # 初始权重比例
+    
+  stream_b:
+    pools: [pool_fast, pool_medium, pool_slow]
+    initial_weights: [1, 2, 4]
+    
+  stream_c:
+    pools: [pool_fast, pool_medium, pool_slow]
+    initial_weights: [1, 1, 8]  # 更不均衡! slow权重8,让压力更集中
+
+# Scheduler 策略配置
+scheduler:
+  tick: 1s              # 调度器采样间隔缩短 (2s→1s),更频繁检查
+  default_cooldown: 10s # 默认冷却时间
+  
+  policies:
+    # Stream A: 不启用自动调整（验证权重保持不变）
+    stream_a:
+      enabled: false
+      
+    # Stream B: 不启用自动调整（sticky 场景不需要调整）
+    stream_b:
+      enabled: false
+      
+    # Stream C: 启用自动调整（展示闭环重均衡）
+    stream_c:
+      enabled: true
+      strategy: pressure_rebalance
+      cooldown: 3s       # 缩短冷却期,更快响应
+      params:
+        minPressureDelta: 3.0   # 提高阈值 (1.5→3.0),不要太敏感
+        baseStep: 1.0           # 基准步长 = 1,小步调整
+        maxStep: 1.0            # 最大步长也是1,每次只调1,需要多次才能平衡
+        minWeight: 1.0          # 最小权重
+        maxFrac: 0.2            # 降低最大调整比例 (30%→20%)
+        paceRate: 3.0           # 降低刻度 (5.0→3.0)

@@ -56,7 +56,7 @@ func NewPrometheusExporter(
 		[]string{"pool"},
 	)
 
-	// 你的 ProcessedCount 是“当前总处理数”，更像一个 monotonic gauge，
+	// ProcessedCount 是“当前总处理数”，更像一个 monotonic gauge，
 	// 在 Prometheus 用 rate() / increase() 时一样能得到吞吐。
 	processedCnt := promauto.With(reg).NewGaugeVec(
 		prometheus.GaugeOpts{

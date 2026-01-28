@@ -165,7 +165,7 @@ func (r *runtime) Start(ctx context.Context) error {
 
 				// 用户自定义 keyFn：可覆盖或补充 key
 				if keyFn != nil {
-					k2 := r.keyFn(srcName, payload)
+					k2 := keyFn(srcName, payload)
 					if len(k2) > 0 {
 						key = k2
 					} else {
@@ -189,18 +189,21 @@ func (r *runtime) Start(ctx context.Context) error {
 				}
 
 				// 3. 创建一个任务（一个闭包函数），该任务封装了对消息的实际处理逻辑。
+				currentPayload := payload // 捕获当前的 payload 变量
 				task := func() {
 					// 调用用户传入的 Handler 函数处理消息。
-					if err := h(payload); err != nil {
+					if err := h(currentPayload); err != nil {
 						log.Printf("[handler] error src=%s err=%v", srcName, err)
 					}
 				}
 
 				// 4. 将任务提交到协程池。
-				//    如果协程池已关闭或上下文被取消，Submit 会返回错误。
-				if err := p.Submit(r.ctx, task); err != nil {
-					log.Printf("[runtime] submit failed src=%s pool=%s err=%v", srcName, p.Name(), err)
-				}
+				//    使用 goroutine 异步提交，避免一个 pool 阻塞影响其他 pool
+				go func(pool pool.WorkerPool, t func(), src string) {
+					if err := pool.Submit(r.ctx, t); err != nil {
+						log.Printf("[runtime] submit failed src=%s pool=%s err=%v", src, pool.Name(), err)
+					}
+				}(p, task, srcName)
 			}
 		}(name, src)
 	}

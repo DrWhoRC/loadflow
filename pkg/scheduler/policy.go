@@ -8,7 +8,8 @@ import (
 // Policy 定义每个流的调度策略配置
 // Policy 本身只存储数据,不包含默认值逻辑(默认值由 Strategy 管理)
 type Policy struct {
-	Enabled bool
+	Enabled    bool
+	EnabledSet bool //标记 Enabled 字段是否被显式设置
 
 	// StrategyName 指向注册表中的策略
 	StrategyName string
@@ -89,7 +90,10 @@ func normalizePolicy(v Policy, def Policy) Policy {
 	// def 作为兜底
 	out := def
 	// v 显式字段覆盖 def
-	out.Enabled = v.Enabled
+	if v.EnabledSet {
+		out.Enabled = v.Enabled
+		out.EnabledSet = true
+	}
 	if v.StrategyName != "" {
 		out.StrategyName = v.StrategyName
 	}
