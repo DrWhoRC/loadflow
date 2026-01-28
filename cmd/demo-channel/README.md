@@ -1,391 +1,328 @@
-# LoadFlow Demo - Configuration-Driven Load Balancing Demo
+# LoadFlow Demo - Pressure-Based Rebalancing Demonstration
 
-本 Demo 用于验证 LoadFlow 框架的核心能力：**路由语义正确性**、**闭环重均衡**和**可观测性**。
+English | [简体中文](README_zh.md)
 
-## 🎯 Demo 目标
+This demo showcases LoadFlow's **automatic load balancing** capability through a pressure-based rebalancing mechanism. Watch as the system autonomously detects queue saturation and adjusts routing weights to achieve equilibrium.
 
-通过一个配置驱动的演示场景，证明以下能力：
+## 🎯 What This Demo Proves
 
-### A 块：路由与消息协议
-- **A1**: 默认 JSON Envelope + key 可为空 + keyFn 覆盖
-- **A2**: 无 key 时按权重分发（纯吞吐路由）
-- **A3**: 有 key 时 sticky per pool（同 key 始终路由到同一个池）
+This demonstration validates LoadFlow's core capabilities:
 
-### B 块：负载均衡闭环
-- **B1**: 采样 → Decide → Apply → Cooldown 的完整闭环
-- **B2.2**: per-stream policy（不同流使用不同策略/参数/冷却期）
-- **B2.5**: Explainability（事件日志和指标解释调整原因）
+### ✅ Automatic Pressure Detection
+- Monitors queue depth and pool capacity in real-time
+- Calculates pressure metrics across all worker pools
+- Triggers rebalancing when pressure exceeds configured thresholds
 
-## 📋 快速开始
+### ✅ Intelligent Weight Adjustment
+- Gradually shifts traffic from saturated to underutilized pools
+- Uses configurable step sizes for controlled, observable changes
+- Prevents oscillation through cooldown mechanisms
 
-### 1. 运行 Demo
+### ✅ Self-Healing Convergence
+- Achieves stable equilibrium without manual intervention
+- Adapts to varying capacity constraints across heterogeneous pools
+- Demonstrates feedback-driven iteration (detect → adjust → stabilize)
+
+## 📋 Quick Start
+
+### 1. Run the Demo
 
 ```bash
 cd cmd/demo-channel
 go run main.go
 ```
 
-Demo 将运行 60 秒，你可以在配置文件中修改 `demo.duration`。
+The demo runs for 30 seconds by default (configurable in `config.yaml`).
 
-### 2. 查看 Prometheus 指标
+**Expected Output:**
+```
+[Demo] Starting LoadFlow demo (duration=30s)...
+[Pool] Created: pool_fast (workers=5, queue=1024)
+[Pool] Created: pool_medium (workers=3, queue=512)
+[Pool] Created: pool_slow (workers=2, queue=256)
+...
+═══════════════════════════════════════════════════════════════
+Time    pool_fast       pool_medium     pool_slow
+───────────────────────────────────────────────────────────────
+0.5s    0/1024          0/512           15/256
+1.0s    0/1024          0/512           35/256
+[EVENT] type=plan_applied stream=stream_c from=pool_slow to=pool_fast deltaW=1
+...
+```
 
-在浏览器中打开：
+### 2. Observe Rebalancing Events
+
+Watch the console logs for rebalancing events:
+- `plan_generated` - System detected pressure and created adjustment plan
+- `plan_applied` - Weight change successfully applied
+- `plan_rejected` - Adjustment blocked (cooldown or insufficient pressure)
+
+### 3. Monitor Metrics (Optional)
+
+View Prometheus metrics in your browser:
 ```
 http://localhost:2112/metrics
 ```
 
-### 3. (可选) 启动 Prometheus
+Key metrics to watch:
+- `loadflow_pool_queue_depth` - Queue saturation levels
+- `loadflow_router_weight` - Current routing weights per stream/pool
+- `loadflow_rebalance_plan_total` - Rebalancing event counts
 
-如果想用 Prometheus UI 查看图表：
+### 4. Start Prometheus (Optional)
+
+For graphical visualization:
 
 ```bash
 cd prometheus
 prometheus --config.file=prometheus.yaml
 ```
 
-然后访问 `http://localhost:9090`
+Access Prometheus UI at `http://localhost:9090`
 
-## 🔧 配置说明
+## 📊 Understanding the Demo Scenario
 
-所有场景配置都在 `config.yaml` 中定义，你可以通过修改配置来改变演示行为：
+### Initial Configuration (Intentionally Imbalanced)
 
-### 修改运行时间
+**Pool Capacities:**
+- `pool_fast`: 5 workers × 100ms latency = **50 msg/s**
+- `pool_medium`: 3 workers × 200ms latency = **15 msg/s**
+- `pool_slow`: 2 workers × 300ms latency = **6.6 msg/s**
+
+**Traffic Load:**
+- `stream_a`, `stream_b`: 20 msg/s each (background)
+- `stream_c`: **100 msg/s** (main demo stream)
+
+**Initial Weights for stream_c: `[1, 1, 8]`**
+- pool_fast: 10% → 10 msg/s ✅ (well below capacity)
+- pool_medium: 10% → 10 msg/s ✅ (below capacity)
+- pool_slow: **80%** → **80 msg/s** ⚠️ (12× capacity!)
+
+**Predicted Outcome:**
+`pool_slow` will saturate rapidly, triggering automatic rebalancing.
+
+### What Happens During Demo
+
+1. **Phase 1 (0-1s): Pressure Build-up**
+   - pool_slow accumulates 35 messages/second
+   - Pressure delta exceeds threshold (37.0 > 3.0)
+
+2. **Phase 2 (1-8s): First Adjustments**
+   - Rebalance #1: Weights shift to [2, 1, 7] (70% → slow)
+   - Rebalance #2: Weights shift to [3, 1, 6] (60% → slow)
+   - Queue continues growing but at reduced rate
+
+3. **Phase 3 (8-22s): Saturation & Iteration**
+   - Queue reaches full capacity (256/256) at 10s
+   - System performs 4 more adjustments (#3-#6)
+   - Cooldown mechanism prevents oscillation
+
+4. **Phase 4 (22-30s): Recovery & Stabilization**
+   - Final weights: [7, 1, 2] (20% → slow, 70% → fast)
+   - Queue drains from 256 → 91 in 6.5 seconds
+   - Pressure drops below threshold (1.56 < 3.0)
+   - **System reaches stable equilibrium** 🎯
+
+### Key Tuning Parameters (Demo vs. Production)
+
+| Parameter | Demo Value | Production Recommendation | Purpose |
+|-----------|------------|---------------------------|---------|
+| `maxStep` | 1 | 2-3 | Step size for weight changes |
+| `cooldown` | 3s | 10s | Minimum time between adjustments |
+| `minPressureDelta` | 3.0 | 5.0 | Threshold for triggering rebalance |
+| `tick` | 1s | 5s | Monitoring frequency |
+
+**Why demo uses smaller values?**
+- Faster iterations make the rebalancing process visible
+- Each adjustment's effect can be clearly observed
+- Trade-off: 6 steps over 23s vs. 2 steps over 6s (production)
+
+## 🔧 Configuration Guide
+
+All behavior is controlled through `config.yaml`:
+
+### Modify Demo Duration
 
 ```yaml
 demo:
-  duration: 120s  # 改为 2 分钟
+  duration: 120s  # Change to 2 minutes
+  metrics_port: 2112
 ```
 
-### 修改池配置
+### Adjust Pool Configuration
 
 ```yaml
 pools:
   - name: pool_fast
-    workers: 16      # 增加 worker 数量
-    queue: 4096      # 增加队列容量
-    base_latency: 3ms  # 减少延迟
+    workers: 10        # Increase capacity
+    queue: 2048        # Larger buffer
+    base_latency: 50ms # Faster processing
 ```
 
-### 注入故障
-
-```yaml
-pools:
-  - name: pool_medium
-    # ...其他配置
-    bad_phase:
-      start: 20s     # 20秒后开始故障
-      end: 40s       # 40秒后恢复
-      latency: 200ms # 故障期间延迟
-      error_rate: 0.2  # 20% 错误率
-```
-
-### 修改流量模式
+### Change Traffic Patterns
 
 ```yaml
 streams:
   - name: stream_c
-    rate: 2000  # 增加到每秒 2000 条消息
-    phases:
-      - start: 0s
-        duration: 30s
-        bias_pool: pool_fast  # 前30秒偏向快池
+    type: weighted
+    rate: 200          # Double the load!
 ```
 
-### 调整调度策略
+### Tune Rebalancing Behavior
 
 ```yaml
 scheduler:
-  tick: 1s  # 每秒采样一次
+  tick: 2s             # Check every 2 seconds
+  default_cooldown: 10s
   policies:
     stream_c:
       enabled: true
-      cooldown: 3s  # 更短的冷却期
+      strategy: pressure_rebalance
+      cooldown: 5s     # More aggressive
       params:
-        minPressureDelta: 5.0  # 更高的阈值（更保守）
-        maxStep: 5.0           # 更大的步长（更激进）
+        minPressureDelta: 2.0  # More sensitive
+        maxStep: 3             # Larger adjustments
 ```
 
-## 📊 验收标准
+## 📈 Key Metrics Explained
 
-Demo 运行后，通过以下指标验证各项能力：
+### Rebalancing Metrics
 
-### ✅ A2: 纯吞吐路由正确性
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `loadflow_rebalance_plan_total` | Counter | stream, result | Count of rebalancing events (generated/applied/rejected) |
+| `loadflow_rebalance_step_size` | Gauge | stream | Size of the last weight adjustment |
+| `loadflow_router_weight` | Gauge | stream, pool | Current routing weight for each stream-pool pair |
 
-**指标**:
-```promql
-rate(loadflow_pool_messages_processed_total{stream="stream_a"}[30s])
-```
+### Pool Health Metrics
 
-**预期**: pool_fast : pool_medium : pool_slow ≈ 1 : 2 : 4 (±10%)
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `loadflow_pool_queue_depth` | Gauge | pool | Current queue depth |
+| `loadflow_pool_queue_capacity` | Gauge | pool | Maximum queue capacity |
+| `loadflow_pool_tasks_processed_total` | Counter | pool | Total messages processed |
+| `loadflow_pool_worker_count` | Gauge | pool | Number of active workers |
 
-**说明**: stream_a 没有 key，应该严格按照权重比例分发
+### Routing Metrics
 
----
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `loadflow_stream_messages_in_total` | Counter | stream | Messages received per stream |
+| `loadflow_router_routed_total` | Counter | stream, pool | Messages routed from stream to pool |
+| `loadflow_router_routing_violations_total` | Counter | stream | Sticky routing violations (same key to different pools) |
 
-### ✅ A3: Sticky 路由正确性
+## 📝 Detailed Analysis
 
-**指标**:
-```promql
-loadflow_router_routing_violations_total{stream="stream_b"}
-```
+For a complete timeline analysis of the rebalancing process, see:
 
-**预期**: 始终为 0
+- **English**: [`demo_outcomes_detailed.md`](./demo_outcomes_detailed.md) - Full event timeline with metrics
+- **中文**: [`demo_outcomes_detailed_zh.md`](./demo_outcomes_detailed_zh.md) - 完整事件时间线和指标分析
 
-**说明**: stream_b 有 1000 个不同的 key，每个 key 应始终路由到同一个池
+These documents provide:
+- ✅ Step-by-step breakdown of all 6 rebalancing cycles
+- ✅ Pressure metrics at each decision point
+- ✅ Explanation of the dual-gate mechanism (cooldown + threshold)
+- ✅ Queue depth progression and recovery timeline
+- ✅ Design insights and production tuning recommendations
 
----
+## 🔍 Troubleshooting
 
-### ✅ B2.2: per-stream policy 生效
+### Why aren't weights changing for stream_c?
 
-**指标**:
-```promql
-loadflow_router_weight{stream=~"stream_.*"}
-```
+**Check these conditions:**
 
-**预期**:
-- `stream_a` 权重保持 [1, 2, 4] 不变（disabled）
-- `stream_b` 权重保持 [1, 2, 4] 不变（disabled）
-- `stream_c` 权重**会变化**（enabled + pressure_rebalance）
-
-**说明**: 只有 stream_c 启用了自动调度，其他流保持初始权重
-
----
-
-### ✅ B1: 闭环重均衡工作
-
-**指标**:
-```promql
-loadflow_rebalance_plan_total{stream="stream_c",result="applied"}
-```
-
-**预期**: > 0（至少发生过调整）
-
-**事件日志示例**:
-```
-[EVENT] type=plan_generated stream=stream_c reason=pressure_rebalance 
-        from=pool_slow to=pool_fast deltaW=2 metric=pressure 
-        delta=8.50 threshold=3.00 msg=plan generated
-
-[EVENT] type=plan_applied stream=stream_c ... msg=applied successfully
-```
-
----
-
-### ✅ B2.5: Explainability（可解释性）
-
-**检查项**:
-
-1. **事件日志完整性**
-   - 每次调整都有 `plan_generated` 和 `plan_applied`/`plan_rejected` 事件
-   - 日志包含 from/to pool、delta、threshold
-
-2. **指标维度完整性**
-   ```promql
-   loadflow_rebalance_plan_total{result=~"generated|applied|rejected|failed"}
+1. **Policy enabled?**
+   ```yaml
+   policies:
+     stream_c:
+       enabled: true  # Must be true
    ```
 
-3. **权重变化可追踪**
-   ```promql
-   loadflow_router_weight{stream="stream_c"}
-   ```
-   可以看到权重的时间序列变化
+2. **Sufficient pressure delta?**
+   - View `loadflow_pool_queue_depth` metric
+   - Calculate pressure: `queue_depth / queue_capacity`
+   - Must exceed `minPressureDelta` threshold
 
----
+3. **Cooldown period?**
+   - Check event logs for `plan_rejected` with `msg=in cooldown`
+   - Wait for configured `cooldown` duration to elapse
 
-### ✅ 故障注入效果
+### What if I see routing_violations_total > 0?
 
-**观察时间**: T=30s 到 T=40s (pool_medium bad_phase)
+**This indicates a serious bug!** Possible causes:
 
-**预期指标变化**:
+- Router implementation not respecting key-based routing
+- Concurrent modification of routing tables during rebalancing
+- Hash function not deterministic
 
-1. **错误率上升**
-   ```promql
-   rate(loadflow_pool_errors_total{pool="pool_medium"}[10s])
-   ```
-   应该接近 0.1 (10%)
+**Debug steps:**
+```bash
+# Search logs for VIOLATION events
+grep "VIOLATION" demo.log
 
-2. **延迟上升**
-   ```promql
-   histogram_quantile(0.99, 
-     rate(loadflow_pool_processing_duration_seconds_bucket{pool="pool_medium"}[10s])
-   )
-   ```
-   应该接近 0.1s (100ms)
-
-3. **权重调整**
-   ```promql
-   loadflow_router_weight{stream="stream_c",pool="pool_medium"}
-   ```
-   应该看到权重**下降**（scheduler 远离坏池）
-
-## 🏗️ Demo 架构
-
-```
-┌─────────────┐
-│  config.yaml│ ← 配置驱动
-└──────┬──────┘
-       │
-       ↓
-┌─────────────────────────────────────────┐
-│           main.go (单文件)               │
-├─────────────────────────────────────────┤
-│                                          │
-│  ┌───────────────────────────────────┐  │
-│  │  MessageGenerator (3个)           │  │
-│  │  - stream_a: 纯吞吐 (no key)       │  │
-│  │  - stream_b: Sticky (1000 keys)   │  │
-│  │  - stream_c: Rebalance Demo        │  │
-│  └───────┬───────────────────────────┘  │
-│          ↓ Envelope{stream,key,payload} │
-│  ┌───────────────────────────────────┐  │
-│  │  Runtime                          │  │
-│  │  - codec.Decode()                 │  │
-│  │  - router.RouteWithKey()          │  │
-│  │  - pool.Submit(task)              │  │
-│  └───────┬───────────────────────────┘  │
-│          ↓ task                          │
-│  ┌───────────────────────────────────┐  │
-│  │  InstrumentedHandler              │  │
-│  │  - 延迟注入 (base + bad phase)      │  │
-│  │  - 错误注入 (error_rate)            │  │
-│  │  - 指标埋点 (histogram, counter)    │  │
-│  └───────────────────────────────────┘  │
-│                                          │
-│  ┌───────────────────────────────────┐  │
-│  │  Scheduler Controller              │  │
-│  │  - Sample (每 2s)                   │  │
-│  │  - DecideStream (pressure策略)      │  │
-│  │  - Apply (更新权重)                 │  │
-│  │  - Cooldown (防震荡)                │  │
-│  └───────┬───────────────────────────┘  │
-│          ↓ Plan{NewWeights}             │
-│  ┌───────────────────────────────────┐  │
-│  │  InstrumentedApplier              │  │
-│  │  - 更新 router 权重                 │  │
-│  │  - 更新 weightGauge 指标            │  │
-│  └───────────────────────────────────┘  │
-│                                          │
-│  ┌───────────────────────────────────┐  │
-│  │  KeyTracker                       │  │
-│  │  - 跟踪 key -> pool 映射            │  │
-│  │  - 检测 sticky 违规                 │  │
-│  └───────────────────────────────────┘  │
-│                                          │
-└──────────────────┬───────────────────────┘
-                   ↓
-            ┌──────────────┐
-            │ :2112/metrics│ ← Prometheus
-            └──────────────┘
+# Check which keys are affected
+curl http://localhost:2112/metrics | grep routing_violations
 ```
 
-## 📈 关键指标说明
+### How to make rebalancing faster?
 
-| 指标名 | 类型 | 标签 | 说明 |
-|--------|------|------|------|
-| `loadflow_stream_messages_in_total` | Counter | stream | 每个流接收的消息总数 |
-| `loadflow_pool_messages_processed_total` | Counter | stream, pool | 每个池处理的消息总数 |
-| `loadflow_pool_processing_duration_seconds` | Histogram | stream, pool | 处理延迟分布 |
-| `loadflow_pool_errors_total` | Counter | stream, pool | 处理错误总数 |
-| `loadflow_router_routing_violations_total` | Counter | stream | 路由违规次数（应为0） |
-| `loadflow_router_weight` | Gauge | stream, pool | 当前路由权重 |
-| `loadflow_rebalance_plan_total` | Counter | stream, result | 调度计划统计 |
-| `loadflow_rebalance_step_size` | Gauge | stream | 最近一次调整步长 |
-| `loadflow_pool_queue_depth` | Gauge | pool | 队列深度 |
-| `loadflow_pool_worker_count` | Gauge | pool | Worker 数量 |
-
-## 🔍 常见问题
-
-### Q: 为什么 stream_c 的权重没变化？
-
-**A**: 检查以下几点：
-1. 配置中 `scheduler.policies.stream_c.enabled` 是否为 `true`
-2. 是否存在压力差：查看 `loadflow_pool_queue_depth`
-3. 是否在 cooldown：查看日志中的 `plan_rejected` 事件
-4. 阈值是否过高：降低 `minPressureDelta` 参数
-
-### Q: 看到 routing_violations_total > 0 怎么办？
-
-**A**: 这是严重 bug！可能原因：
-1. Router 实现有问题（hash 不稳定）
-2. 并发问题（权重更新时的竞态）
-3. 配置问题（stream_b 的 key_enabled 应为 true）
-
-### Q: 如何加速观察效果？
-
-**A**: 修改配置：
-```yaml
-demo:
-  duration: 30s  # 缩短总时长
-
-scheduler:
-  tick: 1s       # 更频繁采样
-  
-  policies:
-    stream_c:
-      cooldown: 2s  # 更短冷却期
-      params:
-        minPressureDelta: 1.0  # 更低阈值（更敏感）
-```
-
-## 📝 扩展场景
-
-你可以通过修改 `config.yaml` 创建新的测试场景：
-
-### 场景 1: 4 个池的复杂拓扑
-
-```yaml
-pools:
-  - name: pool_a
-    workers: 4
-    ...
-  - name: pool_b
-    workers: 4
-    ...
-  - name: pool_c
-    workers: 4
-    ...
-  - name: pool_d
-    workers: 4
-    ...
-
-routing:
-  stream_c:
-    pools: [pool_a, pool_b, pool_c, pool_d]
-    initial_weights: [1, 1, 1, 1]
-```
-
-### 场景 2: 多阶段负载迁移
-
-```yaml
-streams:
-  - name: stream_c
-    phases:
-      - {start: 0s, duration: 10s, bias_pool: pool_slow}
-      - {start: 10s, duration: 10s, bias_pool: pool_medium}
-      - {start: 20s, duration: 10s, bias_pool: pool_fast}
-      - {start: 30s, duration: 10s, bias_pool: pool_medium}
-      - {start: 40s, duration: 20s, bias_pool: pool_slow}
-```
-
-### 场景 3: 更激进的策略参数
+**Reduce these values in `config.yaml`:**
 
 ```yaml
 scheduler:
+  tick: 500ms           # Check more frequently (default: 1s)
   policies:
     stream_c:
+      cooldown: 1s      # Faster iteration (default: 3s)
       params:
-        minPressureDelta: 1.0  # 更敏感
-        maxStep: 10.0          # 更大步长
-        maxFrac: 0.5           # 允许单次改动 50% 权重
+        maxStep: 5      # Larger weight shifts (default: 1)
 ```
 
-## 🚀 下一步
+**Warning**: Too aggressive settings may cause oscillation!
 
-1. **集成 Grafana**: 导入 `grafana/dashboard.json` 可视化指标
-2. **增加指标**: 在 handler 中添加更多业务指标
-3. **自定义策略**: 实现 `StreamStrategy` 接口并注册
-4. **配置热更新**: 监听配置文件变化，动态调整参数
+## 🎓 Learning Outcomes
 
----
+After running this demo, you'll understand:
+
+✅ **How pressure-based rebalancing works**
+   - Automatic detection of queue saturation
+   - Incremental weight adjustment to redistribute load
+   - Convergence to stable equilibrium
+
+✅ **The dual-gate safety mechanism**
+   - Cooldown prevents rapid oscillation
+   - Threshold ensures meaningful adjustments
+   - Both conditions must be met for changes
+
+✅ **Trade-offs in parameter tuning**
+   - `maxStep`: Gradual (stable) vs. aggressive (fast)
+   - `cooldown`: Responsive vs. oscillation-resistant
+   - `minPressureDelta`: Sensitive vs. noise-tolerant
+
+✅ **Observable system behavior**
+   - Real-time metrics via Prometheus
+   - Event logs explaining every decision
+   - Visual feedback through console output
+
+## 🚀 Next Steps
+
+**Experiment with different scenarios:**
+
+1. **Simulate traffic spikes**
+   - Change `stream_c.rate` from 100 to 500
+   - Watch how system adapts to extreme overload
+
+2. **Test heterogeneous pools**
+   - Vary `base_latency` across pools (10ms, 100ms, 1000ms)
+   - Observe how capacity differences affect weight distribution
+
+3. **Try different strategies**
+   - Implement custom rebalancing strategies
+   - Compare pressure-based vs. latency-based vs. error-rate-based
+
+4. **Add more streams**
+   - Create competing streams with different priorities
+   - Test multi-stream rebalancing interactions
 
 **Have fun experimenting with LoadFlow!** 🎉
+
