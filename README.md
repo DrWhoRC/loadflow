@@ -53,6 +53,44 @@ This is essential for workloads where **ordering defines correctness**, such as 
 
 ---
 
+## Documentation Index
+
+### Core Strategy Documentation
+
+- [Strategy 1: Keyless Routing](strategy_1_keyless_routing_en.md) - Basic routing for stateless tasks
+- [Strategy 2: Dynamic Rebalancing](strategy_2_dynamic_rebalancing_en.md) - Adaptive load balancing optimization
+- [Strategy 3: Strongly Ordered](strategy_3_strongly_ordered_en.md) - Ordered message processing
+
+### Technical Documentation
+
+- [StripedPool Design Documentation](docs/striped_pool.md) - Architecture and implementation of strongly ordered pool
+
+### Examples & Demos
+
+#### Demo-Channel (Dynamic Rebalancing Demo)
+- [Demo User Guide](cmd/demo-channel/README.md)
+- [Demo Detailed Outcomes](cmd/demo-channel/demo_outcomes_detailed.md)
+
+#### StripedPool Example
+- [Example Code](examples/striped_pool/main.go) - Strongly ordered processing example
+
+---
+
+## Quick Start
+
+### Run Demos
+```bash
+# Dynamic Rebalancing Demo
+cd cmd/demo-channel
+go run main.go
+
+# Strongly Ordered Processing Example
+cd examples/striped_pool
+go run main.go
+```
+
+---
+
 ## 简介（中文版）
 
 本框架提出了一种新的并发调度范式——基于**多协程池**和**多数据流**的负载均衡消费策略。
@@ -97,4 +135,50 @@ This is essential for workloads where **ordering defines correctness**, such as 
 | minWeight | 1.0 | 每个池的最小权重限制 |
 | maxFrac | 0.2 | 单次调整占总权重的最大比例（20%） |
 | paceRate | 5.0 | 触发额外步长单位所需的压力差间隔 |
+
+---
+
+## 文档索引 (Documentation Index)
+
+### 核心策略文档 (Core Strategy Documentation)
+
+#### 中文版 (Chinese)
+- [策略一：无 Key 路由](strategy_1_keyless_routing_zh.md) - 基础路由策略，适用于无状态任务
+- [策略二：动态再平衡](strategy_2_dynamic_rebalancing_zh.md) - 自适应负载均衡优化
+- [策略三：强有序](strategy_3_strongly_ordered_zh.md) - 保证消息顺序的处理策略
+
+#### English
+- [Strategy 1: Keyless Routing](strategy_1_keyless_routing_en.md) - Basic routing for stateless tasks
+- [Strategy 2: Dynamic Rebalancing](strategy_2_dynamic_rebalancing_en.md) - Adaptive load balancing optimization
+- [Strategy 3: Strongly Ordered](strategy_3_strongly_ordered_en.md) - Ordered message processing
+
+### 技术文档 (Technical Documentation)
+
+- [StripedPool 设计文档](docs/striped_pool.md) - 强有序池的架构与实现
+
+### 示例与演示 (Examples & Demos)
+
+#### Demo-Channel (动态再平衡演示)
+- [Demo 使用指南 (中文)](cmd/demo-channel/README_zh.md)
+- [Demo User Guide (English)](cmd/demo-channel/README.md)
+- [Demo 详细运行结果 (中文)](cmd/demo-channel/demo_outcomes_detailed_zh.md)
+- [Demo Detailed Outcomes (English)](cmd/demo-channel/demo_outcomes_detailed.md)
+
+#### StripedPool Example
+- [示例代码](examples/striped_pool/main.go) - 强有序处理示例
+
+---
+
+## 快速开始 (Quick Start)
+
+### 运行 Demo
+```bash
+# 动态再平衡演示
+cd cmd/demo-channel
+go run main.go
+
+# 强有序处理示例
+cd examples/striped_pool
+go run main.go
+```
 
