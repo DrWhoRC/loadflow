@@ -57,16 +57,24 @@ type runtime struct {
 	// - 输入：srcName + payload（注意：这里是 payload，不是 raw）
 	// - 返回：key（nil/空表示无 key）
 	keyFn router.KeyFunc
+
+	// Dispatcher 管理：每个 (stream, pool) 组合有一个专属的 dispatcher
+	// key 格式："streamName:poolName"
+	dispatchers map[string]*RouteDispatcher
+	dispMu      sync.RWMutex
+	bufferSize  int // dispatcher 的缓冲队列大小
 }
 
 // New 创建一个新的 Runtime 实例。
 // 参数 h 是一个 consumer.Handler 函数，它定义了如何处理从数据源接收到的每一条消息。
 func New(h consumer.Handler) Runtime {
 	return &runtime{
-		h:        h,
-		srcs:     make(map[string]source.Source),
-		pools:    make(map[string]pool.WorkerPool),
-		msgCodec: message.NewJSONCodec(),
+		h:           h,
+		srcs:        make(map[string]source.Source),
+		pools:       make(map[string]pool.WorkerPool),
+		dispatchers: make(map[string]*RouteDispatcher),
+		msgCodec:    message.NewJSONCodec(),
+		bufferSize:  100,
 	}
 }
 
@@ -94,6 +102,40 @@ func (r *runtime) UseRouter(ro router.Router) {
 	r.rtMu.Lock()
 	defer r.rtMu.Unlock()
 	r.router = ro
+}
+
+// getOrCreateDispatcher 获取或创建指定 (stream, pool) 的 dispatcher
+// 采用懒加载方式：首次路由到某个 pool 时才创建对应的 dispatcher
+// 这样可以根据实际路由关系动态创建，无需提前配置
+func (r *runtime) getOrCreateDispatcher(streamName string, p pool.WorkerPool, bufferSize int) *RouteDispatcher {
+	key := streamName + ":" + p.Name()
+
+	// 先尝试读锁（快速路径）
+	r.dispMu.RLock()
+	disp, exists := r.dispatchers[key]
+	r.dispMu.RUnlock()
+
+	if exists {
+		return disp
+	}
+
+	// 不存在则创建（慢速路径）
+	r.dispMu.Lock()
+	defer r.dispMu.Unlock()
+
+	// 再次检查（double-check，防止并发创建）
+	if disp, exists := r.dispatchers[key]; exists {
+		return disp
+	}
+
+	// 创建新 dispatcher
+	// bufferSize=100: 可以根据实际场景调整
+	disp = NewRouteDispatcher(streamName, p, bufferSize)
+	disp.Start(r.ctx)
+	r.dispatchers[key] = disp
+
+	log.Printf("[runtime] created dispatcher: %s -> %s (buffer=%d)", streamName, p.Name(), bufferSize)
+	return disp
 }
 
 // Start 启动运行时引擎，开始处理数据流。
@@ -129,6 +171,10 @@ func (r *runtime) Start(ctx context.Context) error {
 			keyFn := r.keyFn
 			ro := r.router
 			h := r.h
+			buffer_size := r.bufferSize
+			if buffer_size <= 0 {
+				buffer_size = 100 // 默认值
+			}
 			r.rtMu.RUnlock()
 
 			if codec == nil {
@@ -197,13 +243,14 @@ func (r *runtime) Start(ctx context.Context) error {
 					}
 				}
 
-				// 4. 将任务提交到协程池。
-				//    使用 goroutine 异步提交，避免一个 pool 阻塞影响其他 pool
-				go func(pool pool.WorkerPool, t func(), src string) {
-					if err := pool.Submit(r.ctx, t); err != nil {
-						log.Printf("[runtime] submit failed src=%s pool=%s err=%v", src, pool.Name(), err)
-					}
-				}(p, task, srcName)
+				// 4. 将任务提交到 dispatcher（而不是直接提交到 pool）
+				//    dispatcher 内部有缓冲队列 + 单个 goroutine 处理
+				//    这样避免了 goroutine 爆炸，同时保持了一个 pool 阻塞不影响其他 pool 的特性
+				disp := r.getOrCreateDispatcher(srcName, p, buffer_size)
+				if !disp.TrySubmit(task) {
+					// 队列满时丢弃消息（已在 TrySubmit 内部记录日志）
+					// 未来可以考虑其他策略：阻塞、降级等
+				}
 			}
 		}(name, src)
 	}
@@ -235,7 +282,20 @@ func (r *runtime) Stop(ctx context.Context) error {
 	//    这确保了不会再有新的任务被提交到协程池中。
 	r.wgSrc.Wait()
 
-	// 3) 排空并停止所有协程池。
+	// 3) 停止所有 dispatcher
+	//    确保 dispatcher 的缓冲队列中的任务都被处理完
+	r.dispMu.RLock()
+	dispatchers := make([]*RouteDispatcher, 0, len(r.dispatchers))
+	for _, disp := range r.dispatchers {
+		dispatchers = append(dispatchers, disp)
+	}
+	r.dispMu.RUnlock()
+
+	for _, disp := range dispatchers {
+		disp.Stop()
+	}
+
+	// 4) 排空并停止所有协程池。
 	//    DrainAndStop 会等待池中所有已存在的任务执行完毕，然后关闭所有工作协程。
 	r.rtMu.RLock()
 	defer r.rtMu.RUnlock()
@@ -286,4 +346,13 @@ func (r *runtime) UseKeyFunc(fn router.KeyFunc) {
 	r.rtMu.Lock()
 	defer r.rtMu.Unlock()
 	r.keyFn = fn
+}
+
+func (r *runtime) SetDispatcherBufferSize(size int) {
+	r.rtMu.Lock()
+	defer r.rtMu.Unlock()
+	if size <= 0 {
+		size = 100 // 保证至少有合理的默认值
+	}
+	r.bufferSize = size
 }

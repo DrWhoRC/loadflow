@@ -129,3 +129,7 @@ inCooldown() → 检查冷却
 Applier.Apply() → 应用到 Router
     ↓
 markApplied() → 记录时间
+
+每条消息开一个goroutine用来路由是不合理的，万一下游的queuedepth爆满会导致channel卡住，
+但是新消息还是会开新的goroutine，导致goroutine也爆满，所以改用stream和pool来构建一个消息分发worker。
+这样做甚至比原先更快，大大节省了大量goroutine用户态上下文切换的开销。

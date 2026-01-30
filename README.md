@@ -1,7 +1,7 @@
 **中文版在下方(Chinese Version Below)**
 # LoadFlow
 
-**Status:** Still developing  
+**Status:** Still developing (v0.4.0 done)
 **Fully-functioning in:** v0.6.0
 
 ---
