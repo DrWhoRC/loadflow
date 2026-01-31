@@ -99,13 +99,22 @@ scheduler:
 ### Pressure Calculation
 
 ```go
-Pressure = (QueueDepth / QueueCapacity) × 100
+Pressure = QueueDepth / ProcessRatePS
+
+Where:
+- QueueDepth: Current queue depth (number of pending tasks)
+- ProcessRatePS: Processing rate (tasks/second, calculated by differentiation)
 
 Example:
-pool_slow: 227/256 → 88.67% pressure
-pool_fast: 0/1024  → 0% pressure
+pool_slow: QueueDepth=227, ProcessRatePS=6.6 → Pressure = 227/6.6 = 34.39
+pool_fast: QueueDepth=0, ProcessRatePS=65.0 → Pressure = 0/65.0 = 0.00
 
-Pressure delta = 88.67 - 0 = 88.67
+Pressure delta = 34.39 - 0.00 = 34.39
+
+Pressure Meaning:
+- Higher pressure = More congested (large queue & slow processing)
+- Large queue + slow processing → High pressure
+- Empty queue + fast processing → Low pressure
 ```
 
 ### Decision Logic

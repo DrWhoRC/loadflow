@@ -99,13 +99,22 @@ scheduler:
 ### 压力计算
 
 ```go
-Pressure = (QueueDepth / QueueCapacity) × 100
+Pressure = QueueDepth / ProcessRatePS
+
+其中：
+- QueueDepth: 当前队列深度（等待处理的任务数）
+- ProcessRatePS: 处理速率（tasks/second，通过差分计算）
 
 示例：
-pool_slow: 227/256 → 88.67% 压力
-pool_fast: 0/1024  → 0% 压力
+pool_slow: QueueDepth=227, ProcessRatePS=6.6 → Pressure = 227/6.6 = 34.39
+pool_fast: QueueDepth=0, ProcessRatePS=65.0 → Pressure = 0/65.0 = 0.00
 
-压力差 = 88.67 - 0 = 88.67
+压力差 = 34.39 - 0.00 = 34.39
+
+压力含义：
+- 压力越大 = 越堵塞（队列积压多 & 处理速度慢）
+- 队列大 + 处理慢 → 高压力
+- 队列空 + 处理快 → 低压力
 ```
 
 ### 决策逻辑
