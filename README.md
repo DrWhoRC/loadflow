@@ -12,6 +12,8 @@ This framework proposes a new paradigm for concurrent scheduling — a load-bala
 
 Its core idea is to realize **self-balancing concurrency** through dynamic organization of coroutine pools and adaptive routing of data streams.
 
+Demo link: [loadflow_demo_retail_using_kaggle_retail_datasource](https://github.com/DrWhoRC/loadflow_demo_retail)
+
 ---
 ## THREE Strategies
 
@@ -96,6 +98,8 @@ go run main.go
 本框架提出了一种新的并发调度范式——基于**多协程池**和**多数据流**的负载均衡消费策略。
 
 其核心思想是通过协程池的动态组织和数据流的自适应路由，实现**自平衡并发**。
+
+专门的demo仓库链接：[loadflow_demo_retail_using_kaggle_retail_datasource](https://github.com/DrWhoRC/loadflow_demo_retail)
 
 ---
 
